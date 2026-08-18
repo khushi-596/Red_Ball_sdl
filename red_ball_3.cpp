@@ -1,17 +1,46 @@
 #include <graphics.h>
-#include <iostream>
+#include <SDL2/SDL.h>
 #include <cmath>
+#include <algorithm>
+#include <vector>
 
 using namespace std;
 
+#define WIN_WIDTH 800
+#define WIN_HEIGHT 600
+#define PI 3.14159265f
 
-// ================= DDA LINE =================
+volatile bool windowClosed = false;
+
+int SDLCALL closeEventWatcher(void* userdata, SDL_Event* event)
+{
+    if (event->type == SDL_QUIT)
+        windowClosed = true;
+
+    return 0;
+}
+
+void safePutpixel(int x, int y, int color)
+{
+    if (x >= 0 && x < WIN_WIDTH &&
+        y >= 0 && y < WIN_HEIGHT)
+    {
+        putpixel(x, y, color);
+    }
+}
+
 void DDA(int x1, int y1, int x2, int y2)
 {
     int dx = x2 - x1;
     int dy = y2 - y1;
 
     int steps = max(abs(dx), abs(dy));
+
+    if (steps == 0)
+    {
+        safePutpixel(x1, y1, getcolor());
+        return;
+    }
 
     float Xinc = (float)dx / steps;
     float Yinc = (float)dy / steps;
@@ -21,15 +50,12 @@ void DDA(int x1, int y1, int x2, int y2)
 
     for (int i = 0; i <= steps; i++)
     {
-        putpixel(round(x), round(y), getcolor());
-
+        safePutpixel((int)round(x), (int)round(y), getcolor());
         x += Xinc;
         y += Yinc;
     }
 }
 
-
-// ================= BRESENHAM LINE =================
 void Bresenham(int x1, int y1, int x2, int y2)
 {
     int dx = abs(x2 - x1);
@@ -42,251 +68,589 @@ void Bresenham(int x1, int y1, int x2, int y2)
 
     while (true)
     {
-        putpixel(x1, y1, getcolor());
+        safePutpixel(x1, y1, getcolor());
 
         if (x1 == x2 && y1 == y2)
             break;
 
         int e2 = 2 * err;
 
-        if (e2 > -dy)
-        {
-            err -= dy;
-            x1 += sx;
-        }
-
-        if (e2 < dx)
-        {
-            err += dx;
-            y1 += sy;
-        }
+        if (e2 > -dy) { err -= dy; x1 += sx; }
+        if (e2 < dx)  { err += dx; y1 += sy; }
     }
 }
 
-
-// ================= BRESENHAM CIRCLE =================
 void circleBres(int xc, int yc, int r)
 {
     int x = 0;
     int y = r;
-
     int delta = 2 * (1 - r);
     int p;
 
     while (y >= x)
     {
-        putpixel(xc + x, yc + y, getcolor());
-        putpixel(xc - x, yc + y, getcolor());
-        putpixel(xc + x, yc - y, getcolor());
-        putpixel(xc - x, yc - y, getcolor());
-
-        putpixel(xc + y, yc + x, getcolor());
-        putpixel(xc - y, yc + x, getcolor());
-        putpixel(xc + y, yc - x, getcolor());
-        putpixel(xc - y, yc - x, getcolor());
+        safePutpixel(xc + x, yc + y, getcolor());
+        safePutpixel(xc - x, yc + y, getcolor());
+        safePutpixel(xc + x, yc - y, getcolor());
+        safePutpixel(xc - x, yc - y, getcolor());
+        safePutpixel(xc + y, yc + x, getcolor());
+        safePutpixel(xc - y, yc + x, getcolor());
+        safePutpixel(xc + y, yc - x, getcolor());
+        safePutpixel(xc - y, yc - x, getcolor());
 
         if (delta < 0)
         {
             p = 2 * delta + 2 * y + 1;
-
-            if (p <= 0)
-            {
-                x++;
-                delta += 2 * x + 1;
-            }
-            else
-            {
-                x++;
-                y--;
-                delta += 2 * x - 2 * y + 2;
-            }
+            if (p <= 0) { x++; delta += 2 * x + 1; }
+            else        { x++; y--; delta += 2 * x - 2 * y + 2; }
         }
         else
         {
             p = 2 * delta - 2 * x - 1;
-
-            if (p <= 0)
-            {
-                x++;
-                y--;
-                delta += 2 * x - 2 * y + 2;
-            }
-            else
-            {
-                y--;
-                delta += 1 - 2 * y;
-            }
+            if (p <= 0) { x++; y--; delta += 2 * x - 2 * y + 2; }
+            else        { y--; delta += 1 - 2 * y; }
         }
     }
 }
 
+// ---------------------------------------------------------------------
+// Minimal 2D homogeneous transform matrices (3x3), used to drive the
+// sun-ray rotation about the sun's center and the ball's local-shape
+// translation, instead of hand-rolled sin/cos and +offset arithmetic.
+// ---------------------------------------------------------------------
+struct Mat3
+{
+    float m[3][3];
+};
 
-// ================= GROUND =================
+Mat3 matIdentity()
+{
+    Mat3 r{};
+    r.m[0][0] = 1; r.m[0][1] = 0; r.m[0][2] = 0;
+    r.m[1][0] = 0; r.m[1][1] = 1; r.m[1][2] = 0;
+    r.m[2][0] = 0; r.m[2][1] = 0; r.m[2][2] = 1;
+    return r;
+}
+
+Mat3 matTranslation(float tx, float ty)
+{
+    Mat3 r = matIdentity();
+    r.m[0][2] = tx;
+    r.m[1][2] = ty;
+    return r;
+}
+
+Mat3 matRotation(float radians)
+{
+    Mat3 r = matIdentity();
+    float c = cosf(radians);
+    float s = sinf(radians);
+
+    r.m[0][0] = c; r.m[0][1] = -s;
+    r.m[1][0] = s; r.m[1][1] = c;
+    return r;
+}
+
+Mat3 matMultiply(const Mat3& a, const Mat3& b)
+{
+    Mat3 r{};
+    for (int i = 0; i < 3; i++)
+    {
+        for (int j = 0; j < 3; j++)
+        {
+            float sum = 0.0f;
+            for (int k = 0; k < 3; k++)
+                sum += a.m[i][k] * b.m[k][j];
+            r.m[i][j] = sum;
+        }
+    }
+    return r;
+}
+
+void matTransformPoint(const Mat3& m, float x, float y, float& outX, float& outY)
+{
+    outX = m.m[0][0] * x + m.m[0][1] * y + m.m[0][2];
+    outY = m.m[1][0] * x + m.m[1][1] * y + m.m[1][2];
+}
+
+void drawSun(int xc, int yc, int r, float rotationDeg)
+{
+    setcolor(YELLOW);
+    circleBres(xc, yc, r);
+
+    // Each ray is a local point rotated about the origin by a rotation
+    // matrix, then placed at the sun's center. Local ray points are
+    // defined along the local +X axis at radii (r+8) and (r+25); the
+    // matrix rotation reproduces the original cos/sin placement exactly.
+    for (int i = 0; i < 360; i += 45)
+    {
+        float rad = (i + rotationDeg) * PI / 180.0f;
+
+        Mat3 rot = matRotation(rad);
+
+        float offX1, offY1, offX2, offY2;
+        matTransformPoint(rot, (float)(r + 8), 0.0f, offX1, offY1);
+        matTransformPoint(rot, (float)(r + 25), 0.0f, offX2, offY2);
+
+        int x1 = xc + (int)offX1;
+        int y1 = yc + (int)offY1;
+        int x2 = xc + (int)offX2;
+        int y2 = yc + (int)offY2;
+
+        Bresenham(x1, y1, x2, y2);
+    }
+}
+
+// Collision for the ground is handled by groundRect, not this drawing.
 void drawGround()
 {
-    setcolor(WHITE);
-    DDA(40, 420, 780, 420);
+    setcolor(GREEN);
+    DDA(20, 420, 780, 420);
 }
 
-
-// ================= PLATFORM =================
+// Collision for the platform is handled by platformRect, not this drawing.
 void drawPlatform()
 {
-    setcolor(WHITE);
+    int x1 = 165, y1 = 325, x2 = 380;
 
-    DDA(220, 300, 450, 300);
-    DDA(450, 300, 450, 420);
+    setcolor(GREEN);
+    DDA(x1, y1, x2, y1);
+    DDA(x1, y1, x1, 350);
+    DDA(x1, 350, x2, 350);
+    DDA(x2, y1, x2, 420);
 }
 
-
-// ================= WOODEN BOX =================
-void drawWoodenBox()
-{
-    setcolor(BROWN);
-
-    Bresenham(180, 420, 180, 340);
-    Bresenham(180, 340, 260, 340);
-    Bresenham(260, 340, 260, 420);
-    Bresenham(260, 420, 180, 420);
-
-    Bresenham(180, 340, 260, 420);
-    Bresenham(260, 340, 180, 420);
-
-    DDA(180, 355, 260, 355);
-    DDA(180, 405, 260, 405);
-
-    setcolor(WHITE);
-}
-
-
-// ================= WHITE BOX =================
-void drawWhiteBox()
-{
-    setcolor(WHITE);
-
-    Bresenham(520, 420, 520, 360);
-    Bresenham(520, 360, 580, 360);
-    Bresenham(580, 360, 580, 420);
-    Bresenham(580, 420, 520, 420);
-}
-
-
-// ================= STAIRS =================
+// Collision for the stairs is handled by the step rects, not this drawing.
 void drawStairs()
 {
     setcolor(WHITE);
 
-    Bresenham(620, 420, 620, 390);
-    Bresenham(620, 390, 680, 390);
+    DDA(470, 420, 510, 420);
+    DDA(510, 420, 510, 405);
 
-    Bresenham(680, 390, 680, 360);
-    Bresenham(680, 360, 740, 360);
+    DDA(510, 405, 550, 405);
+    DDA(550, 405, 550, 390);
+
+    DDA(550, 390, 590, 390);
+    DDA(590, 390, 590, 375);
+
+    DDA(590, 375, 630, 375);
+    DDA(630, 375, 630, 420);
 }
 
-
-// ================= SUN =================
-void drawSun()
+// Collision for the box is handled by boxRect, not this drawing.
+void drawWoodenBox(int x, int y)
 {
-    setcolor(YELLOW);
-    circleBres(540, 90, 35);
+    int w = 75, h = 75;
+
+    setcolor(BROWN);
+    DDA(x, y, x + w, y);
+    DDA(x + w, y, x + w, y + h);
+    DDA(x + w, y + h, x, y + h);
+    DDA(x, y + h, x, y);
+
+    Bresenham(x + 8, y + 8, x + w - 8, y + h - 8);
+    Bresenham(x + w - 8, y + 8, x + 8, y + h - 8);
 }
 
-
-// ================= DRAW BALL =================
-void drawBall(int xc, int yc, int r, float angle)
+void drawEnemy(int x, int y)
 {
-    // Draw ONLY one circle
+    int w = 65, h = 55;
+
+    setcolor(DARKGRAY);
+    DDA(x, y, x + w, y);
+    DDA(x + w, y, x + w, y + h);
+    DDA(x + w, y + h, x, y + h);
+    DDA(x, y + h, x, y);
+
+    setcolor(WHITE);
+    circleBres(x + 20, y + 22, 6);
+    circleBres(x + 45, y + 22, 6);
+
+    setcolor(RED);
+    circleBres(x + 20, y + 22, 2);
+    circleBres(x + 45, y + 22, 2);
+
+    setcolor(WHITE);
+    DDA(x + 20, y + 39, x + 45, y + 39);
+    DDA(x + 20, y + 39, x + 24, y + 43);
+    DDA(x + 45, y + 39, x + 41, y + 43);
+}
+
+void drawRedBall(int xc, int yc, int r, float angle)
+{
     setcolor(RED);
     circleBres(xc, yc, r);
 
-    // Rotation indicator
-    //int x2 = xc + (int)((r - 4) * cos(angle));
-    //int y2 = yc + (int)((r - 4) * sin(angle));
+    // The ball's face features (eyes, pupils, mouth) are defined as
+    // local-space offset points and mapped into world space with a
+    // single translation matrix centered on the ball. This reproduces
+    // the original (xc + dx, yc + dy) arithmetic exactly, but routes
+    // it through the matrix pipeline so the whole face "rides along"
+    // with the ball's position as one transform.
+    Mat3 toBall = matTranslation((float)xc, (float)yc);
 
-    setcolor(RED);
-
-    //Bresenham(xc, yc, x2, y2);
-}
-
-
-// ================= ERASE OLD BALL =================
-void eraseBall(int xc, int yc, int r)
-{
-    // Completely remove old ball
-    setcolor(BLACK);
-
-    setfillstyle(SOLID_FILL, BLACK);
-    fillellipse(xc, yc, r + 2, r + 2);
-
-    // Restore platform line
-    setcolor(WHITE);
-
-    DDA(xc - r - 2, 300, xc + r + 2, 300);
-}
-
-
-// ================= MAIN =================
-int main()
-{
-    int gd = DETECT;
-    int gm;
-
-    initgraph(&gd, &gm, NULL);
-
-    setbkcolor(BLACK);
-
-    // =========================================
-    // INITIAL BALL POSITION
-    // =========================================
-
-    int ballX = 330;
-    int ballY = 275;
-
-    int radius = 25;
-
-    float angle = 0;
-
-
-    // =========================================
-    // DRAW STATIC OBJECTS ONLY ONCE
-    // =========================================
-
-    cleardevice();
-
-    drawGround();
-    drawPlatform();
-    drawWoodenBox();
-    drawWhiteBox();
-    drawStairs();
-    drawSun();
-
-
-    // Draw first ball
-    drawBall(ballX, ballY, radius, angle);
-
-
-    // =========================================
-    // BALL ANIMATION
-    // =========================================
-
-    for (int i = 0; i < 55; i++)
+    auto worldPt = [&](float lx, float ly, int& ox, int& oy)
     {
-        delay(40);
+        float wx, wy;
+        matTransformPoint(toBall, lx, ly, wx, wy);
+        ox = (int)round(wx);
+        oy = (int)round(wy);
+    };
 
-        // Remove previous ball completely
-        eraseBall(ballX, ballY, radius);
+    int px, py;
 
-        // Translation
-        ballX += 2;
+    setcolor(WHITE);
+    worldPt(-9.0f, -5.0f, px, py);
+    circleBres(px, py, 7);
+    worldPt(9.0f, -5.0f, px, py);
+    circleBres(px, py, 7);
 
-        // Rotation
-        angle += 0.20;
+    setcolor(BLACK);
+    worldPt(-9.0f, -4.0f, px, py);
+    circleBres(px, py, 3);
+    worldPt(9.0f, -4.0f, px, py);
+    circleBres(px, py, 3);
 
-        // Draw ONLY the new ball
-        drawBall(ballX, ballY, radius, angle);
+    setcolor(WHITE);
+    int mx1, my1, mx2, my2, mx3, my3, mx4, my4, mx5, my5;
+    worldPt(-13.0f, 7.0f, mx1, my1);
+    worldPt(-8.0f, 13.0f, mx2, my2);
+    worldPt(0.0f, 16.0f, mx3, my3);
+    worldPt(8.0f, 13.0f, mx4, my4);
+    worldPt(13.0f, 7.0f, mx5, my5);
+
+    Bresenham(mx1, my1, mx2, my2);
+    Bresenham(mx2, my2, mx3, my3);
+    Bresenham(mx3, my3, mx4, my4);
+    Bresenham(mx4, my4, mx5, my5);
+}
+
+void drawStar(int xc, int yc)
+{
+    setcolor(YELLOW);
+
+    int points[10][2];
+
+    for (int i = 0; i < 10; i++)
+    {
+        float angle = -PI / 2 + i * PI / 5;
+        int radius = (i % 2 == 0) ? 15 : 7;
+
+        points[i][0] = xc + (int)(radius * cos(angle));
+        points[i][1] = yc + (int)(radius * sin(angle));
     }
 
+    for (int i = 0; i < 10; i++)
+    {
+        int next = (i + 1) % 10;
+        Bresenham(points[i][0], points[i][1], points[next][0], points[next][1]);
+    }
+}
 
+void drawFlag(int x, int y)
+{
+    setcolor(WHITE);
+    DDA(x, y, x, y + 70);
+    DDA(x, y, x + 35, y + 12);
+    DDA(x + 35, y + 12, x, y + 25);
+    DDA(x, y + 25, x, y);
+}
+
+// All level solids are rects; the ball is a circle resolved against them.
+struct Rect
+{
+    float x, y, w, h;
+};
+
+static inline float clampf(float v, float lo, float hi)
+{
+    return max(lo, min(v, hi));
+}
+
+// Detects circle-vs-rect overlap; fills push-out normal + penetration depth.
+bool circleRectOverlap(float cx, float cy, float radius, const Rect& r,
+                        float& outNx, float& outNy, float& outPen)
+{
+    float closestX = clampf(cx, r.x, r.x + r.w);
+    float closestY = clampf(cy, r.y, r.y + r.h);
+
+    float dx = cx - closestX;
+    float dy = cy - closestY;
+    float distSq = dx * dx + dy * dy;
+
+    if (distSq >= radius * radius)
+        return false;
+
+    float dist = sqrtf(distSq);
+
+    if (dist > 0.0001f)
+    {
+        outNx = dx / dist;
+        outNy = dy / dist;
+        outPen = radius - dist;
+    }
+    else
+    {
+        // Center is inside the rect: push out via the nearest edge.
+        float overlapLeft   = cx - r.x;
+        float overlapRight  = (r.x + r.w) - cx;
+        float overlapTop    = cy - r.y;
+        float overlapBottom = (r.y + r.h) - cy;
+
+        float m = min(min(overlapLeft, overlapRight), min(overlapTop, overlapBottom));
+
+        if (m == overlapTop)         { outNx = 0; outNy = -1; outPen = radius + overlapTop; }
+        else if (m == overlapBottom) { outNx = 0; outNy = 1;  outPen = radius + overlapBottom; }
+        else if (m == overlapLeft)   { outNx = -1; outNy = 0; outPen = radius + overlapLeft; }
+        else                         { outNx = 1;  outNy = 0; outPen = radius + overlapRight; }
+    }
+
+    return true;
+}
+
+// Pushes the ball out of the rect and clamps velocity along the hit axis.
+bool resolveCircleRect(float& ballX, float& ballY, float radius,
+                        float& vx, float& vy, bool& grounded, const Rect& r)
+{
+    float nx, ny, pen;
+
+    if (!circleRectOverlap(ballX, ballY, radius, r, nx, ny, pen))
+        return false;
+
+    ballX += nx * pen;
+    ballY += ny * pen;
+
+    if (fabs(ny) >= fabs(nx))
+    {
+        if (ny < 0)
+        {
+            if (vy > 0) vy = 0;
+            grounded = true;
+        }
+        else
+        {
+            if (vy < 0) vy = 0;
+        }
+    }
+    else
+    {
+        vx = 0;
+    }
+
+    return true;
+}
+
+// Sub-steps movement so fast motion can't tunnel through thin solids.
+void moveBallWithCollision(float& ballX, float& ballY, float radius,
+                            float& vx, float& vy, bool& grounded,
+                            const vector<Rect>& solids)
+{
+    grounded = false;
+
+    float remainingX = vx;
+    float remainingY = vy;
+
+    float maxStep = radius * 0.5f;
+    float dist = max(fabs(remainingX), fabs(remainingY));
+    int steps = max(1, (int)ceil(dist / maxStep));
+
+    float stepX = remainingX / steps;
+    float stepY = remainingY / steps;
+
+    for (int s = 0; s < steps; s++)
+    {
+        ballX += stepX;
+        ballY += stepY;
+
+        for (const Rect& r : solids)
+            resolveCircleRect(ballX, ballY, radius, vx, vy, grounded, r);
+    }
+}
+
+int main()
+{
+    initwindow(WIN_WIDTH, WIN_HEIGHT);
+
+    SDL_AddEventWatch(closeEventWatcher, NULL);
+
+    setbkcolor(BLACK);
+    cleardevice();
+
+    float ballX = 30.0f;
+    float ballY = 395.0f;
+    int ballRadius = 25;
+
+    float vx = 0.0f;
+    float vy = 0.0f;
+
+    const float gravity = 0.55f;
+    const float jumpPower = -11.0f;
+    const float moveSpeed = 5.5f;
+    const float friction = 0.88f;
+
+    bool grounded = true;
+    float ballAngle = 0.0f;
+
+    float enemyX = 660.0f;
+    float enemyY = 365.0f;
+    const float enemyW = 65.0f;
+    const float enemyH = 55.0f;
+    float enemySpeed = 2.0f;
+    int enemyDirection = 1;
+    bool enemyAlive = true;
+
+    const int boxX = 70, boxY = 345, boxW = 75, boxH = 75;
+
+    const int sunX = 650, sunY = 100, sunRadius = 35;
+    float sunRotation = 0.0f;
+    const float sunRotationSpeed = 0.15f; // degrees per frame — slow spin
+
+    bool star1 = true;
+    bool star2 = true;
+    const float star1X = 250, star1Y = 275;
+    const float star2X = 530, star2Y = 335;
+    const float starPickupRadius = 22.0f;
+
+    // Static level solids, built once.
+    vector<Rect> solids;
+
+    // Ground slab, extended past the window edges.
+    solids.push_back({ -200.0f, 420.0f, (float)WIN_WIDTH + 400.0f, 200.0f });
+
+    // Platform block, top down to the ground.
+    solids.push_back({ 165.0f, 325.0f, 380.0f - 165.0f, 420.0f - 325.0f });
+
+    // Wooden box block.
+    solids.push_back({ (float)boxX, (float)boxY, (float)boxW, (float)boxH });
+
+    // Stair treads (step 1 is flush with the ground, no collider needed).
+    solids.push_back({ 510.0f, 405.0f, 550.0f - 510.0f, 420.0f - 405.0f });
+    solids.push_back({ 550.0f, 390.0f, 590.0f - 550.0f, 420.0f - 390.0f });
+    solids.push_back({ 590.0f, 375.0f, 630.0f - 590.0f, 420.0f - 375.0f });
+
+    bool running = true;
+    bool previousJump = false;
+
+    while (running)
+    {
+        if (windowClosed) { running = false; break; }
+
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            if (event.type == SDL_QUIT)
+            {
+                windowClosed = true;
+                running = false;
+                break;
+            }
+        }
+
+        if (!running) break;
+
+        const Uint8* keys = SDL_GetKeyboardState(NULL);
+
+        if (keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_Q])
+        {
+            running = false;
+            break;
+        }
+
+        if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A])
+            vx = -moveSpeed;
+
+        if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D])
+            vx = moveSpeed;
+
+        bool jumpPressed = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_SPACE];
+
+        if (jumpPressed && !previousJump && grounded)
+        {
+            vy = jumpPower;
+            grounded = false;
+        }
+
+        previousJump = jumpPressed;
+
+        vy += gravity;
+
+        ballAngle += vx / (float)ballRadius;
+
+        moveBallWithCollision(ballX, ballY, (float)ballRadius, vx, vy, grounded, solids);
+
+        vx *= friction;
+        if (fabs(vx) < 0.05f) vx = 0.0f;
+
+        if (ballX < ballRadius) { ballX = ballRadius; vx = 0; }
+        if (ballX > WIN_WIDTH - ballRadius) { ballX = WIN_WIDTH - ballRadius; vx = 0; }
+
+        if (enemyAlive)
+        {
+            enemyX += enemySpeed * enemyDirection;
+            if (enemyX > 710) enemyDirection = -1;
+            if (enemyX < 650) enemyDirection = 1;
+        }
+
+        // Enemy check is detection-only: it dies and bounces the ball.
+        if (enemyAlive)
+        {
+            Rect enemyRect{ enemyX, enemyY, enemyW, enemyH };
+            float nx, ny, pen;
+
+            if (circleRectOverlap(ballX, ballY, (float)ballRadius, enemyRect, nx, ny, pen))
+            {
+                enemyAlive = false;
+
+                vy = jumpPower * 0.65f;
+
+                if (ballX < enemyX + enemyW / 2.0f)
+                {
+                    ballX = enemyX - ballRadius - 2;
+                    vx = -3.0f;
+                }
+                else
+                {
+                    ballX = enemyX + enemyW + ballRadius + 2;
+                    vx = 3.0f;
+                }
+            }
+        }
+
+        if (star1 && hypot(ballX - star1X, ballY - star1Y) < starPickupRadius)
+            star1 = false;
+
+        if (star2 && hypot(ballX - star2X, ballY - star2Y) < starPickupRadius)
+            star2 = false;
+
+        setbkcolor(BLACK);
+        cleardevice();
+
+        sunRotation += sunRotationSpeed;
+        if (sunRotation >= 360.0f) sunRotation -= 360.0f;
+
+        drawSun(sunX, sunY, sunRadius, sunRotation);
+        drawGround();
+        drawPlatform();
+        drawStairs();
+
+        if (star1) drawStar((int)star1X, (int)star1Y);
+        if (star2) drawStar((int)star2X, (int)star2Y);
+
+        drawWoodenBox(boxX, boxY);
+
+        if (enemyAlive)
+            drawEnemy((int)round(enemyX), (int)round(enemyY));
+
+        drawFlag(760, 350);
+
+        drawRedBall((int)round(ballX), (int)round(ballY), ballRadius, ballAngle);
+
+        refresh();
+        delay(16);
+    }
+
+    SDL_DelEventWatch(closeEventWatcher, NULL);
     closegraph();
 
     return 0;
