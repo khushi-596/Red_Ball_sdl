@@ -114,7 +114,73 @@ void circleBres(int xc, int yc, int r)
     }
 }
 
-//Transformations
+//Scan Filling
+struct Point {
+    int x, y;
+};
+
+void fillPolygon(const vector<Point>& poly, int color)
+{
+    int n = poly.size();
+    if (n < 3)
+        return;
+
+    int yMin = poly[0].y;
+    int yMax = poly[0].y;
+
+    for (const Point& p : poly) {
+        yMin = min(yMin, p.y);
+        yMax = max(yMax, p.y);
+    }
+
+    yMin = max(yMin, 0);
+    yMax = min(yMax, WIN_HEIGHT - 1);
+
+    for (int y = yMin; y <= yMax; y++) {
+        vector<float> intersections;
+
+        for (int i = 0; i < n; i++) {
+            Point p1 = poly[i];
+            Point p2 = poly[(i + 1) % n];
+
+            if (p1.y == p2.y)
+                continue;
+
+            int yLow = min(p1.y, p2.y);
+            int yHigh = max(p1.y, p2.y);
+
+            if (y >= yLow && y < yHigh) {
+                float t = (float)(y - p1.y) / (p2.y - p1.y);
+                float x = p1.x + t * (p2.x - p1.x);
+                intersections.push_back(x);
+            }
+        }
+
+        sort(intersections.begin(), intersections.end());
+
+        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+            int x1 = (int)round(intersections[i]);
+            int x2 = (int)round(intersections[i + 1]);
+
+            for (int x = x1; x <= x2; x++)
+                safePutpixel(x, y, color);
+        }
+    }
+}
+
+void fillCircleScanline(int xc, int yc, int r, int color)
+{
+    for (int dy = -r; dy <= r; dy++) {
+        int span = (int)round(
+            sqrtf((float)(r * r - dy * dy))
+        );
+
+        for (int dx = -span; dx <= span; dx++)
+            safePutpixel(xc + dx, yc + dy, color);
+    }
+}
+
+//Transformation
 struct Mat3 {
     float m[3][3];
 };
@@ -177,7 +243,12 @@ Mat3 matMultiply(const Mat3& A, const Mat3& B)
     return R;
 }
 
-void matTransformPoint(const Mat3& M, float x, float y, float& outX, float& outY)
+void matTransformPoint(
+    const Mat3& M,
+    float x,
+    float y,
+    float& outX,
+    float& outY)
 {
     outX = x * M.m[0][0] + y * M.m[1][0] + M.m[2][0];
     outY = x * M.m[0][1] + y * M.m[1][1] + M.m[2][1];
@@ -186,6 +257,7 @@ void matTransformPoint(const Mat3& M, float x, float y, float& outX, float& outY
 void drawSun(int xc, int yc, int r, float rotationDeg)
 {
     setcolor(YELLOW);
+    fillCircleScanline(xc, yc, r, YELLOW);
     circleBres(xc, yc, r);
 
     for (int i = 0; i < 360; i += 45) {
@@ -207,7 +279,13 @@ void drawSun(int xc, int yc, int r, float rotationDeg)
 
 void drawGround()
 {
+    vector<Point> p = {
+        {20, 420}, {780, 420},
+        {780, 434}, {20, 434}
+    };
+
     setcolor(GREEN);
+    fillPolygon(p, GREEN);
     DDA(20, 420, 780, 420);
 }
 
@@ -215,7 +293,14 @@ void drawPlatform()
 {
     int x1 = 165, y1 = 325, x2 = 380;
 
+    vector<Point> p = {
+        {x1, y1}, {x2, y1},
+        {x2, 350}, {x1, 350}
+    };
+
     setcolor(GREEN);
+    fillPolygon(p, GREEN);
+
     DDA(x1, y1, x2, y1);
     DDA(x1, y1, x1, 350);
     DDA(x1, 350, x2, 350);
@@ -225,6 +310,21 @@ void drawPlatform()
 void drawStairs()
 {
     setcolor(WHITE);
+
+    fillPolygon({
+        {510, 405}, {550, 405},
+        {550, 420}, {510, 420}
+    }, WHITE);
+
+    fillPolygon({
+        {550, 390}, {590, 390},
+        {590, 420}, {550, 420}
+    }, WHITE);
+
+    fillPolygon({
+        {590, 375}, {630, 375},
+        {630, 420}, {590, 420}
+    }, WHITE);
 
     DDA(470, 420, 510, 420);
     DDA(510, 420, 510, 405);
@@ -242,6 +342,13 @@ void drawWoodenBox(int x, int y)
 
     setcolor(BROWN);
 
+    fillPolygon({
+        {x, y},
+        {x + w, y},
+        {x + w, y + h},
+        {x, y + h}
+    }, BROWN);
+
     DDA(x, y, x + w, y);
     DDA(x + w, y, x + w, y + h);
     DDA(x + w, y + h, x, y + h);
@@ -257,18 +364,25 @@ void drawEnemy(int x, int y)
 
     setcolor(DARKGRAY);
 
+    fillPolygon({
+        {x, y},
+        {x + w, y},
+        {x + w, y + h},
+        {x, y + h}
+    }, DARKGRAY);
+
     DDA(x, y, x + w, y);
     DDA(x + w, y, x + w, y + h);
     DDA(x + w, y + h, x, y + h);
     DDA(x, y + h, x, y);
 
     setcolor(WHITE);
-    circleBres(x + 20, y + 22, 6);
-    circleBres(x + 45, y + 22, 6);
+    fillCircleScanline(x + 20, y + 22, 6, WHITE);
+    fillCircleScanline(x + 45, y + 22, 6, WHITE);
 
     setcolor(RED);
-    circleBres(x + 20, y + 22, 2);
-    circleBres(x + 45, y + 22, 2);
+    fillCircleScanline(x + 20, y + 22, 2, RED);
+    fillCircleScanline(x + 45, y + 22, 2, RED);
 
     setcolor(WHITE);
     DDA(x + 20, y + 39, x + 45, y + 39);
@@ -279,6 +393,7 @@ void drawEnemy(int x, int y)
 void drawRedBall(int xc, int yc, int r, float angle)
 {
     setcolor(RED);
+    fillCircleScanline(xc, yc, r, RED);
     circleBres(xc, yc, r);
 
     Mat3 R = matRotation(angle, 1);
@@ -297,18 +412,18 @@ void drawRedBall(int xc, int yc, int r, float angle)
     setcolor(WHITE);
 
     worldPt(-9, -5, px, py);
-    circleBres(px, py, 7);
+    fillCircleScanline(px, py, 7, WHITE);
 
     worldPt(9, -5, px, py);
-    circleBres(px, py, 7);
+    fillCircleScanline(px, py, 7, WHITE);
 
     setcolor(BLACK);
 
     worldPt(-9, -4, px, py);
-    circleBres(px, py, 3);
+    fillCircleScanline(px, py, 3, BLACK);
 
     worldPt(9, -4, px, py);
-    circleBres(px, py, 3);
+    fillCircleScanline(px, py, 3, BLACK);
 
     setcolor(WHITE);
 
@@ -338,10 +453,17 @@ void drawStar(int xc, int yc)
         points[i][1] = yc + (int)(radius * sin(angle));
     }
 
+    vector<Point> p;
+
+    for (int i = 0; i < 10; i++)
+        p.push_back({points[i][0], points[i][1]});
+
     setcolor(YELLOW);
+    fillPolygon(p, YELLOW);
 
     for (int i = 0; i < 10; i++) {
         int next = (i + 1) % 10;
+
         Bresenham(
             points[i][0],
             points[i][1],
@@ -353,6 +475,14 @@ void drawStar(int xc, int yc)
 
 void drawFlag(int x, int y)
 {
+    setcolor(RED);
+
+    fillPolygon({
+        {x, y},
+        {x + 35, y + 12},
+        {x, y + 25}
+    }, RED);
+
     setcolor(WHITE);
 
     DDA(x, y, x, y + 70);
@@ -736,6 +866,5 @@ int main()
     );
 
     closegraph();
-
     return 0;
 }
